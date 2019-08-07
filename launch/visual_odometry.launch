@@ -1,0 +1,11 @@
+<launch>
+<node name="stereo_odometry" pkg="rtabmap_ros" type="stereo_odometry">
+<remap from="left/image_rect" to="/zed/left/image_rect_color"/>
+<remap from="left/camera_info" to="/zed/left/camera_info"/>
+<remap from="right/image_rect" to="/zed/right/image_rect_color"/>
+<remap from="right/camera_info" to="/zed/right/camera_info"/>
+<rosparam>
+  approx_sync: true
+</rosparam>
+</node>
+</launch>

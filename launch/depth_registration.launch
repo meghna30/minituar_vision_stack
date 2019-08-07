@@ -1,0 +1,10 @@
+<launch>
+  <node pkg="nodelet" type="nodelet" name="registration_manager" args="manager" output="screen"/>
+
+  <node pkg="nodelet" type="nodelet" name="depth_registration" args="load depth_image_proc/register registration_manager">
+    <remap from = "rgb/camera_info"   to = "/zed/zed_node/rgb/camera_info" />
+    <remap from = "depth/camera_info" to = "/zed/zed_node/depth/camera_info" />
+    <remap from = "depth/image_rect"  to = "/zed/zed_node/depth/depth_registered" />
+
+</node>
+</launch>

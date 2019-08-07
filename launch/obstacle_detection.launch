@@ -1,0 +1,15 @@
+<launch>
+  <node pkg="nodelet" type="nodelet" name="pcl_manager" args="manager" output="screen" />
+
+  <node pkg="nodelet" type="nodelet" name="obstacle_detection" args="load rtabmap_ros/obstacles_detection pcl_manager">
+  <remap from="cloud" to="/zed/point_cloud/cloud_registered"/>
+  <remap from="ground" to="/ground_pnts"/>
+  <remap from="obstacles" to="/obstacle_pnts"/>
+  <rosparam>
+    frame_id: "/zed_camera_center"
+    Grid/MaxGroundAngle: 5.0
+    Grid/MinClusterSize: 0 
+  </rosparam>
+</node>
+  
+</launch>
