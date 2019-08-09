@@ -23,8 +23,10 @@ from sklearn.cluster import DBSCAN
 
 
 class Segmentation():
+
     def __init__(self):
         rospy.init_node("Segmentation")
+        self.listener = tf.TransformListener()
         self.pub_pcl = rospy.Publisher('pcl', PointCloud2, queue_size = 10)
         self.pub_grnd = rospy.Publisher('grnd_pnts',PointCloud2, queue_size = 10)
         self.pub_non_grnd = rospy.Publisher('non_grnd_pnts', PointCloud2, queue_size = 10)
@@ -34,7 +36,7 @@ class Segmentation():
         self.width = [-3,3]
         self.height = [-5,5]
         self.depth = [0,5]
-        self.cluster_dist_thresh = 0.05
+        self.cluster_dist_thresh = 0.1
         self.min_cluster_samples = 50
         self.bridge = CvBridge()
         self.do_matching = True
@@ -42,9 +44,12 @@ class Segmentation():
         self.min_matches = 10
         self.source_img = []
         self.dest_img = []
-        self.img_height = 144
-        self.img_width = 256
-        self.R_leftCam_to_leftCamOpt =  tf.transformations.euler_matrix(1.57, -1.57, 0)
+        self.img_height = 72
+        self.img_width = 128
+        ## rotation matrix from camera_left_optical_frame to camera_left_frame
+        #(trans, rot) = self.listener.lookupTransform('/zed_left_camera_optical_frame','/zed_left_camera_frame', rospy.Time(0))
+        self.R_leftCamOpt_to_leftCam =  tf.transformations.euler_matrix(1.57, -1.57, 0)
+        
 
 
     def ExtractPlane(self):
@@ -187,20 +192,21 @@ class Segmentation():
     def XYZtoImage(self,xyz,pcl, rgb_img):
 
         cv_rgb_img = self.bridge.imgmsg_to_cv2(rgb_img, "bgr8")
-        tracking_rgb_img = np.zeros([144,256,3], dtype=np.uint8)
-        img = np.zeros([144,256], dtype=np.uint8)
+        tracking_rgb_img = np.zeros([self.img_height,self.img_width,3], dtype=np.uint8)
+        img = np.zeros([self.img_height,self.img_width], dtype=np.uint8)
         K = np.resize(self.camera_info.K,[3,3])
         P = np.resize(self.camera_info.P,[3,4])
         R =  tf.transformations.euler_matrix(1.57, -1.57, 0)
 
+
         xyz_ = np.hstack([xyz,np.ones([len(xyz),1])])
-        xyz_t = np.matmul(R,np.transpose(xyz_))
+        xyz_t = np.matmul(self.R_leftCamOpt_to_leftCam,np.transpose(xyz_))
         pixel_coords = np.matmul(P,xyz_t)
         pixel_coords_y = np.round(pixel_coords[0,:]/pixel_coords[2,:])
         pixel_coords_x = np.round(pixel_coords[1,:]/pixel_coords[2,:])
 
-        pixel_coords_y = np.clip(pixel_coords_y.astype(int),0,255)
-        pixel_coords_x = np.clip(pixel_coords_x.astype(int),0,143)
+        pixel_coords_y = np.clip(pixel_coords_y.astype(int),0,self.img_width-1)
+        pixel_coords_x = np.clip(pixel_coords_x.astype(int),0,self.img_height-1)
 
         img[pixel_coords_x,pixel_coords_y] = 255
 
@@ -232,7 +238,7 @@ class Segmentation():
         xyz_img  = ros_numpy.point_cloud2.pointcloud2_to_xyz_array(pcl,remove_nans=False)
         xyz = xyz_img.reshape([-1,3])
         ## transform into camera left optical frame
-        R = self.R_leftCam_to_leftCamOpt[0:3,0:3]
+        R = self.R_leftCamOpt_to_leftCam[0:3,0:3]
         xyz_R = np.transpose(np.matmul(R,np.transpose(xyz)))
          # xyz in left camera optical frame
         self.xyz_img_dst = np.reshape(xyz_R,[self.img_height,self.img_width,3]) ##  xyz image in left camera optical frame
@@ -300,16 +306,25 @@ class Segmentation():
             src_idx = np.reshape(src_pts.astype(int),[-1,2])
             dst_idx = np.reshape(src_pts.astype(int),[-1,2])
 
-            src_3d_pts = self.xyz_img_src[src_idx[:,1],src_idx[:,0],:]
-            src_3d_pts = src_3d_pts[~np.isnan(src_3d_pts).any(1)]
-            dst_3d_pts = self.xyz_img_dst[dst_idx[:,1],dst_idx[:,0],:]
-            dst_3d_pts = dst_3d_pts[~np.isnan(dst_3d_pts).any(1)]
 
-            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
-            print("Transformation", H)
-            rpy = tf.transformations.euler_from_matrix(H)
-            rpy = np.asarray(rpy)*180/np.pi
-            print("roll, pitch, yaw" ,rpy)
+
+            src_3d_pts = self.xyz_img_src[src_idx[:,1],src_idx[:,0],:]
+            src_nan_idx = np.isnan(src_3d_pts)
+            #src_3d_pts = src_3d_pts[~np.isnan(src_3d_pts).any(1)]
+            dst_3d_pts = self.xyz_img_dst[dst_idx[:,1],dst_idx[:,0],:]
+            dst_nan_idx = np.isnan(dst_3d_pts)
+            #dst_3d_pts = dst_3d_pts[~np.isnan(dst_3d_pts).any(1)]
+            non_nan_idx = np.logical_or(src_nan_idx,dst_nan_idx)
+            src_3d_pts = src_3d_pts[~non_nan_idx.any(1)]
+            dst_3d_pts = dst_3d_pts[~non_nan_idx.any(1)]
+
+            # H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
+            # print("Transformation", H)
+            # rpy = tf.transformations.euler_from_matrix(H)
+            # rpy = np.asarray(rpy)*180/np.pi
+            # print("roll, pitch, yaw" ,rpy)
+
+            self.ExtractTransformation(src_3d_pts,dst_3d_pts)
 
         self.source_img = self.dest_img
         self.xyz_img_src = self.xyz_img_dst
@@ -320,7 +335,7 @@ class Segmentation():
         dst_centroid = np.mean(dst_pnts, axis=0)
 
         src_centered = src_pnts - src_centroid
-        dst_centered = dts_pnts - src_centroid
+        dst_centered = dst_pnts - dst_centroid
 
         H = np.matmul(np.transpose(dst_centered), src_centered)
 
@@ -333,9 +348,8 @@ class Segmentation():
 
         t = src_centroid - np.matmul(R,dst_centroid)
 
-        return R,t
-
-
+        print("rotation",R)
+        print("translation",t)
 
 
 
