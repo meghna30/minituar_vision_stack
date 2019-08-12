@@ -49,7 +49,20 @@ class Segmentation():
         ## rotation matrix from camera_left_optical_frame to camera_left_frame
         #(trans, rot) = self.listener.lookupTransform('/zed_left_camera_optical_frame','/zed_left_camera_frame', rospy.Time(0))
         self.R_leftCamOpt_to_leftCam =  tf.transformations.euler_matrix(1.57, -1.57, 0)
-        
+        self.R_odom_leftCamOpt = tf.transformations.euler_matrix(-1.57,-0.0,-1.57)
+        self.T_odom_leftCamOpt = np.asarray([0.00, 0.030, 0.00,1])
+        self.odom_to_leftCamOpt = self.R_odom_leftCamOpt
+        self.odom_to_leftCamOpt[:,3] = self.T_odom_leftCamOpt
+        self.H_leftCamOpt = np.zeros([4,4])
+        self.H_leftCamOpt[3,3] = 1
+        self.H_odom = []
+
+        ## initiate orb detector
+
+        # self.orb = cv2.ORB_create()
+
+
+
 
 
     def ExtractPlane(self):
@@ -84,14 +97,14 @@ class Segmentation():
 
          ## plane fitting assuming pitch = 0
          quat = imu.orientation
-         euler = tf.transformations.euler_from_quaternion([quat.x, quat.y, quat.z, quat.w])
+         imu_euler = tf.transformations.euler_from_quaternion([quat.x, quat.y, quat.z, quat.w])
 
-         # R = np.asarray([[np.cos(imu[1]),0.0,np.sin(imu[1])],
-         #                [0.0,1.0,0.0],
-         #                [-np.sin(imu[1]),0.0, np.cos(imu[1])]])
-         #
-         # xyz = np.matmul(R,np.transpose(xyz)) # apply pitch
+         R_imu = np.asarray([[np.cos(imu_euler[1]),0.0,np.sin(imu_euler[1])],
+                        [0.0,1.0,0.0],
+                        [-np.sin(imu_euler[1]),0.0, np.cos(imu_euler[1])]])
 
+         xyz = np.matmul(R_imu,np.transpose(xyz)) # apply pitch
+         xyz = np.transpose(xyz)
 
          ## call ransac
          plane_coeffs, grnd_pnts = self.planeRansac(xyz,pcl)
@@ -104,7 +117,6 @@ class Segmentation():
              pcl_grnd = self.XYZtoPCL(xyz_grnd, pcl.header.stamp, pcl.header.frame_id)
              self.pub_grnd.publish(pcl_grnd)
              ## obstacle detection on this
-             # idx_non_grnd = np.setxor1d(all_idx, all_idx[grnd_pnts])
              xyz_non_grnd = xyz[idx_non_grnd,:]
 
              #print(np.shape(xyz_non_grnd))
@@ -270,14 +282,16 @@ class Segmentation():
 
 
     def feature_matching(self):
-        # initiate sift detector
 
-        # Initiate STAR detector
+        # Initiate orb detector
+
+        #fast = cv2.FastFeatureDetector()
         orb = cv2.ORB_create()
 
         # find keypoints and descriptors with SIFT
         kp1, des1 = orb.detectAndCompute(self.source_img, None)
         kp2, des2 = orb.detectAndCompute(self.dest_img, None)
+
 
         FLANN_INDEX_KDTREE = 0
         index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
@@ -285,9 +299,6 @@ class Segmentation():
 
         flann = cv2.FlannBasedMatcher(index_params, search_params)
 
-        # matches = flann.knnMatch(des1,des2,k=2)
-        # create BFMatcher object
-        #bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
         # Match descriptors.
         matches = flann.knnMatch(np.asarray(des1,np.float32),np.asarray(des2,np.float32),k= 2)
@@ -348,8 +359,18 @@ class Segmentation():
 
         t = src_centroid - np.matmul(R,dst_centroid)
 
-        print("rotation",R)
-        print("translation",t)
+        self.H_leftCamOpt[0:3,0:3] = R
+        self.H_leftCamOpt[0:3,3] = t
+
+        self.H_odom = self.odom_to_leftCamOpt*self.H_leftCamOpt
+        rpy = tf.transformations.euler_from_matrix(self.H_odom[0:3,0:3])
+        rpy = np.asarray(rpy)*180/np.pi
+        print("rotation",self.H_odom[0:3,0:3])
+        print("rpy in degrees", rpy)
+        print("translation",self.H_odom[0:3,3])
+
+
+
 
 
 
