@@ -33,19 +33,24 @@ class Segmentation():
         self.pub_obs = rospy.Publisher('obs', PointCloud2, queue_size = 10)
         self.pub_img = rospy.Publisher('obs_image', Image, queue_size = 10)
         self.pub_rgb_img = rospy.Publisher('obs_rgb_image', Image, queue_size = 10)
-        self.width = [-3,3]
-        self.height = [-5,5]
-        self.depth = [0,5]
+        self.pub_matches_img = rospy.Publisher('matches_image', Image, queue_size = 10)
+
+        self.bridge = CvBridge()
+        ## pointcloud segmentation
+        self.width = [-0.5,0.5]
+        self.height = [-2,5]
+        self.depth = [0,2]
+        ## clustering
         self.cluster_dist_thresh = 0.1
         self.min_cluster_samples = 50
-        self.bridge = CvBridge()
+        ## feature detection and matching
         self.do_matching = True
         self.first_detection = True
-        self.min_matches = 10
+        self.min_matches = 4
         self.source_img = []
         self.dest_img = []
-        self.img_height = 72
-        self.img_width = 128
+        self.img_height = 72*2
+        self.img_width = 128*2
         ## rotation matrix from camera_left_optical_frame to camera_left_frame
         #(trans, rot) = self.listener.lookupTransform('/zed_left_camera_optical_frame','/zed_left_camera_frame', rospy.Time(0))
         self.R_leftCamOpt_to_leftCam =  tf.transformations.euler_matrix(1.57, -1.57, 0)
@@ -55,15 +60,15 @@ class Segmentation():
         self.odom_to_leftCamOpt[:,3] = self.T_odom_leftCamOpt
         self.H_leftCamOpt = np.zeros([4,4])
         self.H_leftCamOpt[3,3] = 1
-        self.H_odom = []
-
-        ## initiate orb detector
-
-        # self.orb = cv2.ORB_create()
 
 
+        ## feature detection and matching
+        self.orb = cv2.ORB_create()
 
-
+        FLANN_INDEX_KDTREE = 0
+        index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+        search_params = dict(checks = 25) #50
+        self.flann = cv2.FlannBasedMatcher(index_params, search_params)
 
     def ExtractPlane(self):
         self.camera_info = rospy.wait_for_message('/zed/zed_node/depth/camera_info', CameraInfo)
@@ -72,16 +77,13 @@ class Segmentation():
         pcl = message_filters.Subscriber("/zed/zed_node/point_cloud/cloud_registered", PointCloud2)
         depth_image = message_filters.Subscriber("zed/zed_node/depth/depth_registered", Image)
         rgb_img = message_filters.Subscriber("zed/zed_node/rgb/image_rect_color", Image)
-        ts = message_filters.ApproximateTimeSynchronizer([pcl,imu_data,rgb_img],10,0.1)
+        ts = message_filters.ApproximateTimeSynchronizer([pcl,imu_data,rgb_img],1,0.1)
         ts.registerCallback(self.FitPlane)
         rospy.spin()
 
     def FitPlane(self,pcl,imu, rgb_img):
 
-
          xyz = self.PCLtoXYZ(pcl)
-
-
 
          xyz = xyz[xyz[:,1] > self.width[0]]
          xyz = xyz[xyz[:,1] < self.width[1]]
@@ -249,10 +251,11 @@ class Segmentation():
         tic = time.time()
         xyz_img  = ros_numpy.point_cloud2.pointcloud2_to_xyz_array(pcl,remove_nans=False)
         xyz = xyz_img.reshape([-1,3])
-        ## transform into camera left optical frame
         R = self.R_leftCamOpt_to_leftCam[0:3,0:3]
+        ## transform into camera left optical frame
         xyz_R = np.transpose(np.matmul(R,np.transpose(xyz)))
          # xyz in left camera optical frame
+
         self.xyz_img_dst = np.reshape(xyz_R,[self.img_height,self.img_width,3]) ##  xyz image in left camera optical frame
 
         xyz = xyz[~np.isnan(xyz).any(1)]
@@ -283,70 +286,73 @@ class Segmentation():
 
     def feature_matching(self):
 
-        # Initiate orb detector
+        kp1, des1 = self.orb.detectAndCompute(self.source_img, None)
+        kp2, des2 = self.orb.detectAndCompute(self.dest_img, None)
 
-        #fast = cv2.FastFeatureDetector()
-        orb = cv2.ORB_create()
+        if len(kp1) > 4 and len(kp2) > 4:
+            # Match descriptors.
+            matches = self.flann.knnMatch(np.asarray(des1,np.float32),np.asarray(des2,np.float32),k= 2)
 
-        # find keypoints and descriptors with SIFT
-        kp1, des1 = orb.detectAndCompute(self.source_img, None)
-        kp2, des2 = orb.detectAndCompute(self.dest_img, None)
-
-
-        FLANN_INDEX_KDTREE = 0
-        index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
-        search_params = dict(checks = 50)
-
-        flann = cv2.FlannBasedMatcher(index_params, search_params)
+            good = []
+            for m,n in matches:
+                if m.distance < 0.7*n.distance:
+                    good.append(m)
 
 
-        # Match descriptors.
-        matches = flann.knnMatch(np.asarray(des1,np.float32),np.asarray(des2,np.float32),k= 2)
-
-        good = []
-        for m,n in matches:
-            if m.distance < 0.7*n.distance:
-                good.append(m)
-
-        if len(good)> self.min_matches:
-            src_pts = np.float32([ kp1[m.queryIdx].pt for m in good ]).reshape(-1,1,2)
-            dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good ]).reshape(-1,1,2)
+            if len(good)> self.min_matches:
+                src_pts = np.float32([ kp1[m.queryIdx].pt for m in good ]).reshape(-1,1,2)
+                dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good ]).reshape(-1,1,2)
 
 
-            ## using 2d features for homography estimation
-            src_idx = np.reshape(src_pts.astype(int),[-1,2])
-            dst_idx = np.reshape(src_pts.astype(int),[-1,2])
+                ## using 2d features for homography estimation
+                src_idx = np.reshape(src_pts.astype(int),[-1,2])
+                dst_idx = np.reshape(src_pts.astype(int),[-1,2])
 
 
 
-            src_3d_pts = self.xyz_img_src[src_idx[:,1],src_idx[:,0],:]
-            src_nan_idx = np.isnan(src_3d_pts)
-            #src_3d_pts = src_3d_pts[~np.isnan(src_3d_pts).any(1)]
-            dst_3d_pts = self.xyz_img_dst[dst_idx[:,1],dst_idx[:,0],:]
-            dst_nan_idx = np.isnan(dst_3d_pts)
-            #dst_3d_pts = dst_3d_pts[~np.isnan(dst_3d_pts).any(1)]
-            non_nan_idx = np.logical_or(src_nan_idx,dst_nan_idx)
-            src_3d_pts = src_3d_pts[~non_nan_idx.any(1)]
-            dst_3d_pts = dst_3d_pts[~non_nan_idx.any(1)]
+                src_3d_pts = self.xyz_img_src[src_idx[:,1],src_idx[:,0],:]
+                src_nan_idx = np.isnan(src_3d_pts)
+                #src_3d_pts = src_3d_pts[~np.isnan(src_3d_pts).any(1)]
+                dst_3d_pts = self.xyz_img_dst[dst_idx[:,1],dst_idx[:,0],:]
+                dst_nan_idx = np.isnan(dst_3d_pts)
+                #dst_3d_pts = dst_3d_pts[~np.isnan(dst_3d_pts).any(1)]
+                non_nan_idx = np.logical_or(src_nan_idx,dst_nan_idx)
+                src_3d_pts = src_3d_pts[~non_nan_idx.any(1)]
+                dst_3d_pts = dst_3d_pts[~non_nan_idx.any(1)]
 
-            # H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
-            # print("Transformation", H)
-            # rpy = tf.transformations.euler_from_matrix(H)
-            # rpy = np.asarray(rpy)*180/np.pi
-            # print("roll, pitch, yaw" ,rpy)
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
+                print("Transformation", H)
+                rpy = tf.transformations.euler_from_matrix(H)
+                rpy = np.asarray(rpy)*180/np.pi
+                print("roll, pitch, yaw" ,rpy)
+                ## draw_matches for debuggin
 
-            self.ExtractTransformation(src_3d_pts,dst_3d_pts)
+
+                H_3d = self.ExtractTransformation(src_3d_pts,dst_3d_pts)
+
+                #self.DrawMatches(H_3d, good, kp1, kp2, mask)
+            else:
+                rospy.loginfo("good matches less than 4")
+        else:
+            rospy.loginfo("No matches found")
 
         self.source_img = self.dest_img
         self.xyz_img_src = self.xyz_img_dst
 
     def ExtractTransformation(self, src_pnts, dst_pnts):
 
-        src_centroid = np.mean(src_pnts, axis=0)
-        dst_centroid = np.mean(dst_pnts, axis=0)
+        src_pnts_ =  np.hstack([src_pnts,np.ones([len(src_pnts),1])])
+        src_pnts_odom = np.transpose(np.matmul(self.odom_to_leftCamOpt,np.transpose(src_pnts_)))[:,0:3]
 
-        src_centered = src_pnts - src_centroid
-        dst_centered = dst_pnts - dst_centroid
+
+        dst_pnts_ =  np.hstack([dst_pnts,np.ones([len(dst_pnts),1])])
+        dst_pnts_odom = np.transpose(np.matmul(self.odom_to_leftCamOpt,np.transpose(dst_pnts_)))[:,0:3]
+
+        src_centroid = np.mean(src_pnts_odom, axis=0)
+        dst_centroid = np.mean(dst_pnts_odom, axis=0)
+
+        src_centered = src_pnts_odom - src_centroid
+        dst_centered = dst_pnts_odom - dst_centroid
 
         H = np.matmul(np.transpose(dst_centered), src_centered)
 
@@ -359,16 +365,33 @@ class Segmentation():
 
         t = src_centroid - np.matmul(R,dst_centroid)
 
-        self.H_leftCamOpt[0:3,0:3] = R
-        self.H_leftCamOpt[0:3,3] = t
-
-        self.H_odom = self.odom_to_leftCamOpt*self.H_leftCamOpt
-        rpy = tf.transformations.euler_from_matrix(self.H_odom[0:3,0:3])
+        #self.H_odom = self.odom_to_leftCamOpt*self.H_leftCamOpt
+        rpy = tf.transformations.euler_from_matrix(R)
         rpy = np.asarray(rpy)*180/np.pi
-        print("rotation",self.H_odom[0:3,0:3])
-        print("rpy in degrees", rpy)
-        print("translation",self.H_odom[0:3,3])
+        #print("rotation",self.H_odom[0:3,0:3])
+        print("rpy", rpy)
+        print("translation",t)
+        return R
 
+    def DrawMatches(self, H, good_matches, kp1, kp2, mask):
+        """ draw matches for sanity check between the two images
+        """
+        img1 = self.source_img
+        img2 = self.dest_img
+        matchesMask = mask.ravel().tolist()
+        pts = np.float32([ [0,0],[0,self.img_height-1],[self.img_width-1,self.img_height-1],[self.img_width-1,0] ]).reshape(-1,1,2)
+
+        dst = cv2.perspectiveTransform(pts,H)
+        img2 = cv2.polylines(img2, [np.int32(dst)], True, 255,3, cv2.LINE_AA)
+
+        draw_params = dict(matchColor = (0,255,0), singlePointColor = None, flags = 2 )
+        img3 = cv2.drawMatches(img1, kp1, img2, kp2, good_matches, None, **draw_params)
+
+        try:
+            matches_img = self.bridge.cv2_to_imgmsg(img3,encoding="bgr8")
+        except CvBridgeError as e:
+            print(e)
+        self.pub_matches_img.publish(matches_img)
 
 
 
