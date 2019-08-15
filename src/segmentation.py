@@ -82,14 +82,14 @@ class Segmentation():
         rospy.loginfo('received depth image')
         rgb_img = message_filters.Subscriber("zed/zed_node/rgb/image_rect_color", Image)
         rospy.loginfo('received rgb image')
-        ts = message_filters.ApproximateTimeSynchronizer([pcl,imu_data,rgb_img],1,0.1)
+        ts = message_filters.ApproximateTimeSynchronizer([pcl,imu_data,rgb_img],10,0.1)
         rospy.loginfo('messages synchronized')
         ts.registerCallback(self.FitPlane)
         rospy.spin()
 
     def FitPlane(self,pcl,imu, rgb_img):
 
-         rospy.loginfo('fitting plane')
+
          xyz = self.PCLtoXYZ(pcl)
 
          xyz = xyz[xyz[:,1] > self.width[0]]
@@ -107,6 +107,7 @@ class Segmentation():
          ## plane fitting assuming pitch = 0
          quat = imu.orientation
          imu_euler = tf.transformations.euler_from_quaternion([quat.x, quat.y, quat.z, quat.w])
+
 
          R_imu = np.asarray([[np.cos(imu_euler[1]),0.0,np.sin(imu_euler[1])],
                         [0.0,1.0,0.0],
@@ -134,7 +135,7 @@ class Segmentation():
              ##self.pub_non_grnd.publish(pcl_non_grnd)
 
              # lets do some clustering
-             rospy.loginfo('lets do some clustering')
+
              clusters = DBSCAN(eps = self.cluster_dist_thresh, min_samples = self.min_cluster_samples,
                                metric = 'euclidean', algorithm = 'kd_tree').fit(xyz_non_grnd)
              no_clusters = len(np.unique(clusters.labels_)) - 1
@@ -157,7 +158,7 @@ class Segmentation():
 
              obs_idx = self.cluster_idx[np.argmax(self.cluster_size)]
              xyz_obs = xyz_non_grnd[obs_idx[:,0],:]
-
+             xyz_obs = np.transpose(np.matmul(np.linalg.inv(R_imu), np.transpose(xyz_obs)))
              ## visualize obstacle cluster in rviz
              pcl_obs = self.XYZtoPCL(xyz_obs, pcl.header.stamp, pcl.header.frame_id)
              self.pub_obs.publish(pcl_obs)
@@ -330,9 +331,10 @@ class Segmentation():
 
                 H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
                 print("Transformation", H)
-                rpy = tf.transformations.euler_from_matrix(H)
-                rpy = np.asarray(rpy)*180/np.pi
-                print("roll, pitch, yaw" ,rpy)
+                if H != None:
+                    rpy = tf.transformations.euler_from_matrix(H)
+                    rpy = np.asarray(rpy)*180/np.pi
+                    print("roll, pitch, yaw" ,rpy)
                 ## draw_matches for debuggin
 
 
@@ -400,10 +402,6 @@ class Segmentation():
         except CvBridgeError as e:
             print(e)
         self.pub_matches_img.publish(matches_img)
-
-
-
-
 
 
 if __name__=="__main__":
