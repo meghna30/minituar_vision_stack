@@ -331,10 +331,9 @@ class Segmentation():
 
                 H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
                 print("Transformation", H)
-                if H != None:
-                    rpy = tf.transformations.euler_from_matrix(H)
-                    rpy = np.asarray(rpy)*180/np.pi
-                    print("roll, pitch, yaw" ,rpy)
+                rpy = tf.transformations.euler_from_matrix(H)
+                rpy = np.asarray(rpy)*180/np.pi
+                print("roll, pitch, yaw" ,rpy)
                 ## draw_matches for debuggin
 
 
@@ -402,6 +401,10 @@ class Segmentation():
         except CvBridgeError as e:
             print(e)
         self.pub_matches_img.publish(matches_img)
+
+
+
+
 
 
 if __name__=="__main__":
