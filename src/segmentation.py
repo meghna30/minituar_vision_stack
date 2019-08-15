@@ -10,6 +10,7 @@ import rospy
 import numpy as np
 import rospkg
 import cv2
+#import ros_numpy
 import ros_numpy
 import message_filters
 from cv_bridge import CvBridge, CvBridgeError
@@ -72,17 +73,23 @@ class Segmentation():
 
     def ExtractPlane(self):
         self.camera_info = rospy.wait_for_message('/zed/zed_node/depth/camera_info', CameraInfo)
-
+        rospy.loginfo('received camera info')
         imu_data = message_filters.Subscriber("/zed/zed_node/imu/data", Imu)
+        rospy.loginfo('received imu data')
         pcl = message_filters.Subscriber("/zed/zed_node/point_cloud/cloud_registered", PointCloud2)
+        rospy.loginfo('received pointcloud')
         depth_image = message_filters.Subscriber("zed/zed_node/depth/depth_registered", Image)
+        rospy.loginfo('received depth image')
         rgb_img = message_filters.Subscriber("zed/zed_node/rgb/image_rect_color", Image)
+        rospy.loginfo('received rgb image')
         ts = message_filters.ApproximateTimeSynchronizer([pcl,imu_data,rgb_img],1,0.1)
+        rospy.loginfo('messages synchronized')
         ts.registerCallback(self.FitPlane)
         rospy.spin()
 
     def FitPlane(self,pcl,imu, rgb_img):
 
+         rospy.loginfo('fitting plane')
          xyz = self.PCLtoXYZ(pcl)
 
          xyz = xyz[xyz[:,1] > self.width[0]]
@@ -127,6 +134,7 @@ class Segmentation():
              ##self.pub_non_grnd.publish(pcl_non_grnd)
 
              # lets do some clustering
+             rospy.loginfo('lets do some clustering')
              clusters = DBSCAN(eps = self.cluster_dist_thresh, min_samples = self.min_cluster_samples,
                                metric = 'euclidean', algorithm = 'kd_tree').fit(xyz_non_grnd)
              no_clusters = len(np.unique(clusters.labels_)) - 1
