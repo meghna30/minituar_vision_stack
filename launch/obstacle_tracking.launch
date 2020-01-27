@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+  <include file="$(find zed_wrapper)/launch/zed.launch"/>
+<group ns = "vicon">
+  <include file="$(find mocap_vicon)launch/vicon.launch"/>
+</group>
+  <include file="$(find minituar_vision_stack)/launch/bag_record.launch"/>
+
+
+  <!--node name = "segmentation_node" pkg= "minituar_vision_stack" type="segmentation.py" output="screen"/-->
+</launch>

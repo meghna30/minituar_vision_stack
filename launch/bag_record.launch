@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="folder" default="bags"/>
+
+<node pkg="rosbag" name="recorder" type="record" output ="screen" args="record -o $(env HOME)/bags/
+  /tf
+  /tf_static
+  /zed/zed_node/odom
+  /zed/zed_node/path_odom
+  /zed/zed_node/imu/data
+  /zed/zed_node/point_cloud/cloud_registered
+  /zed/zed_node/depth/camera_info
+  /zed/zed_node/depth/depth_registered
+  /zed/zed_node/rgb/image_rect_color
+  /vicon/vicon/red_can/odom
+  /vicon/vicon/red_can/pose"/>
+</launch>
