@@ -129,7 +129,7 @@ class Segmentation():
 
 
     def FitPlane(self,pcl, rgb_img, odom, imu,vicon_odom ):
-
+         pdb.set_trace()
          self.stamp = pcl.header.stamp
          self.frame_id = pcl.header.frame_id
 
