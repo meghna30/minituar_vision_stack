@@ -50,7 +50,7 @@ class Tracker():
         self.min_cluster_samples = 20
 
 
-        self.dist_thresh = 0.1    ##
+        self.dist_thresh = 0.3   ##
 
         self.obs_init = False ## flag to check if obs has been initialised
         self.track_mode = True  ## flag to chack if tracking mode is enabled.
@@ -82,8 +82,11 @@ class Tracker():
         self.min_matches = 3
         self.pub_poke_flag = False
         self.H_odom = np.zeros([4,4])
+        self.poke_done = False
+
 
     def GetMsgs(self):
+
         self.camera_info = rospy.wait_for_message('/zed/zed_node/depth/camera_info', CameraInfo)
         rospy.loginfo('received camera info')
         imu_data = message_filters.Subscriber("/zed/zed_node/imu/data", Imu)
@@ -95,7 +98,6 @@ class Tracker():
         rgb_img = message_filters.Subscriber("/zed/zed_node/rgb/image_rect_color", Image)
         rospy.loginfo('received rgb image')
         odom = message_filters.Subscriber("/zed/zed_node/odom", Odometry)
-        rospy.Subscriber("/poke_done",Bool,self.poke_callback)
         ts = message_filters.ApproximateTimeSynchronizer([pcl,rgb_img, odom, imu_data],100,0.1)
         rospy.loginfo('messages synchronized')
         ts.registerCallback(self.callback)
@@ -105,6 +107,7 @@ class Tracker():
         self.poke_done = data.data
 
     def callback(self, pcl, rgb_img, odom, imu):
+        rospy.Subscriber("/poke_done",Bool,self.poke_callback)
 
 
         self.stamp = pcl.header.stamp
@@ -137,6 +140,7 @@ class Tracker():
                 xyz, xyz_img = PCLtoXYZ(pcl, self.R_leftCamOpt_to_leftCam, self.img_height,self.img_width)
                 xyz_obs, dst_center = segmentPCL(pcl,xyz, self.width, self.height, self.depth, R_imu, self.cluster_dist_thresh, self.min_cluster_samples)
                 dst_center = dst_center[0]
+                print(dst_center)
                 ## xyz to image
                 ## obs_pixels
                 cv_rgb_img = self.bridge.imgmsg_to_cv2(rgb_img, "bgr8")
@@ -149,9 +153,9 @@ class Tracker():
                 ## draw bounding box on image
                 p1 = (int(b_box[0]), int(b_box[1]))
                 p2 = (int(b_box[0] + b_box[2]), int(b_box[1] + b_box[3]))
-                cv2.rectangle(cv_rgb_img,p1,p2,(200,0,0))
-                img_msg = self.publishImages(cv_rgb_img)
-                self.pub_img.publish(img_msg)
+                # cv2.rectangle(cv_rgb_img,p1,p2,(200,0,0))
+                # # img_msg = self.publishImages(cv_rgb_img)
+                # # self.pub_img.publish(img_msg)
                 #
                 ok = self.obs_tracker.init(cv_rgb_img, b_box)
                 if ok:
@@ -195,7 +199,7 @@ class Tracker():
                     xyz_obs = xyz_obs_bbox[obs_idx[:,0],:]
                     msg_pcl = XYZtoPCL(xyz_obs,self.stamp, self.camera_info.header.frame_id)
                     self.pub_pcl.publish(msg_pcl)
-                    dst_center = np.mean(xyz_obs, axis = 0)[1]
+                    dst_center = np.mean(xyz_obs, axis = 0)[2]
                     print(dst_center)
 
 
@@ -206,6 +210,7 @@ class Tracker():
         #once within threshold distance initiate poking behavior
             if np.abs(dst_center) < self.dist_thresh:
             ## stop tracking start poking
+
                 self.track_mode = False
                 self.pub_poke_mode.publish(Bool(data=True))
 
@@ -218,55 +223,57 @@ class Tracker():
                 blah, self.xyz_img_src = PCLtoXYZ(pcl, self.R_leftCamOpt_to_leftCam, self.img_height,self.img_width)
                 # img_msg = self.publishImages(self.src_img)
                 # self.pub_img.publish(img_msg)
-
+                print("done storing src informaation")
 
 
 
         # ## use the frame before the poke and right after the poke to calculate translation and rotation
         # ### afer done with the poking
+
         if self.track_mode == False and self.poke_done == True:
-                cv_rgb_img = self.bridge.imgmsg_to_cv2(rgb_img, "bgr8")
-                ok, b_box = self.obs_tracker.update(cv_rgb_img)
 
-                p1 = (int(b_box[0]), int(b_box[1]))
-                p2 = (int(b_box[0] + b_box[2]), int(b_box[1] + b_box[3]))
+            cv_rgb_img = self.bridge.imgmsg_to_cv2(rgb_img, "bgr8")
+            ok, b_box = self.obs_tracker.update(cv_rgb_img)
 
-                x_pixels = np.arange(p1[1], p2[1])
-                y_pixels = np.arange(p1[0], p2[0])
-                xx_pixels,yy_pixels = np.meshgrid(x_pixels, y_pixels)
-                xx_pixels.reshape(-1,1)
-                yy_pixels.reshape(-1,1)
-                blah, xyz_img = PCLtoXYZ(pcl, self.R_leftCamOpt_to_leftCam, self.img_height,self.img_width)
-                xyz_obs_img = xyz_img[xx_pixels, yy_pixels,:]  ##
-                xyz_obs_bbox = xyz_obs_img.reshape([-1,3])
-                xyz_obs_bbox = xyz_obs_bbox[~np.isnan(xyz_obs_bbox).any(1)]
-                # msg_pcl = XYZtoPCL(xyz_obs_bbox,self.stamp, self.camera_info.header.frame_id)
-                # self.pub_pcl.publish(msg_pcl)
+            p1 = (int(b_box[0]), int(b_box[1]))
+            p2 = (int(b_box[0] + b_box[2]), int(b_box[1] + b_box[3]))
 
-                ## clustering ?
-                clusters = DBSCAN(eps = self.cluster_dist_thresh, min_samples = self.min_cluster_samples,
-                                  metric = 'euclidean', algorithm = 'kd_tree').fit(xyz_obs_bbox)
-                no_clusters = len(np.unique(clusters.labels_)) - 1
-                cluster_size = []
-                cluster_idx = []
-                for i in range(0, no_clusters):
-                    cluster_idx.append(np.argwhere(clusters.labels_ == i))
-                    cluster_size.append(len(cluster_idx[i]))
+            x_pixels = np.arange(p1[1], p2[1])
+            y_pixels = np.arange(p1[0], p2[0])
+            xx_pixels,yy_pixels = np.meshgrid(x_pixels, y_pixels)
+            xx_pixels.reshape(-1,1)
+            yy_pixels.reshape(-1,1)
+            blah, xyz_img = PCLtoXYZ(pcl, self.R_leftCamOpt_to_leftCam, self.img_height,self.img_width)
+            xyz_obs_img = xyz_img[xx_pixels, yy_pixels,:]  ##
+            xyz_obs_bbox = xyz_obs_img.reshape([-1,3])
+            xyz_obs_bbox = xyz_obs_bbox[~np.isnan(xyz_obs_bbox).any(1)]
+                        # msg_pcl = XYZtoPCL(xyz_obs_bbox,self.stamp, self.camera_info.header.frame_id)
+                        # self.pub_pcl.publish(msg_pcl)
 
-                obs_idx = cluster_idx[np.argmax(cluster_size)]
-                xyz_obs = xyz_obs_bbox[obs_idx[:,0],:]
+                        ## clustering ?
+            clusters = DBSCAN(eps = self.cluster_dist_thresh, min_samples = self.min_cluster_samples,
+                                          metric = 'euclidean', algorithm = 'kd_tree').fit(xyz_obs_bbox)
+            no_clusters = len(np.unique(clusters.labels_)) - 1
+            cluster_size = []
+            cluster_idx = []
+            for i in range(0, no_clusters):
+                cluster_idx.append(np.argwhere(clusters.labels_ == i))
+                cluster_size.append(len(cluster_idx[i]))
 
-                tracking_rgb_img = np.zeros([self.img_height,self.img_width,3], dtype=np.uint8)
+            obs_idx = cluster_idx[np.argmax(cluster_size)]
+            xyz_obs = xyz_obs_bbox[obs_idx[:,0],:]
 
-                pixel_coords_x, pixel_coords_y = self.XYZtoPixels(xyz_obs, self.R_I)   ## xyz_obs is in the left opt frame check XYZtoPixels
-                tracking_rgb_img[pixel_coords_x,pixel_coords_y] = cv_rgb_img[pixel_coords_x, pixel_coords_y]
-                self.dest_img = tracking_rgb_img
-                blah, self.xyz_img_dst = PCLtoXYZ(pcl, self.R_leftCamOpt_to_leftCam, self.img_height,self.img_width)
-                img_msg = self.publishImages(self.dest_img)
-                self.pub_img.publish(img_msg)
+            tracking_rgb_img = np.zeros([self.img_height,self.img_width,3], dtype=np.uint8)
+
+            pixel_coords_x, pixel_coords_y = self.XYZtoPixels(xyz_obs, self.R_I)   ## xyz_obs is in the left opt frame check XYZtoPixels
+            tracking_rgb_img[pixel_coords_x,pixel_coords_y] = cv_rgb_img[pixel_coords_x, pixel_coords_y]
+            self.dest_img = tracking_rgb_img
+            blah, self.xyz_img_dst = PCLtoXYZ(pcl, self.R_leftCamOpt_to_leftCam, self.img_height,self.img_width)
+            img_msg = self.publishImages(self.dest_img)
+            self.pub_img.publish(img_msg)
 
 
-                self.feature_matching()
+            self.feature_matching()
 
 
 
@@ -316,6 +323,7 @@ class Tracker():
         R , t = ProcrustesRansac(src_pnts_odom,dst_pnts_odom)
         t = src_centroid - dst_centroid
 
+        pdb.set_trace()
         print(R, t)
 
 
